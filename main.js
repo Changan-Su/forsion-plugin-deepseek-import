@@ -17,6 +17,10 @@
  */
 var PLUGIN_ID = 'deepseek-import'
 var SOURCE = 'deepseek'
+/** conversations.json 最多读这么大(解压后);再大的导出先在 DeepSeek 那边分批不现实,但几百 MB 的纯文本已远超常人用量 */
+var MAX_JSON_BYTES = 512 * 1024 * 1024
+/** 引擎一段对话最多收这么多条(sessionImport.ts IMPORT_MAX_MESSAGES);更长的整段跳过、单独计数,不悄悄截掉 */
+var MAX_MESSAGES = 20000
 
 var MSG = {
   zh: {
@@ -39,6 +43,9 @@ var MSG = {
     messages: '消息',
     range: '时间',
     skipped: '{n} 段没有内容,会跳过',
+    tooLong: '{n} 段超过 {max} 条消息,太长了这次没法导入',
+    tooBig: '文件太大(解压后超过 512 MB),读不了。',
+    sep: ';',
     agentRow: '放进哪个 Agent',
     agentNew: '新建「DeepSeek」',
     modelRow: '用哪个模型接着聊',
@@ -88,6 +95,9 @@ var MSG = {
     messages: 'Messages',
     range: 'Dates',
     skipped: '{n} empty chats will be skipped',
+    tooLong: '{n} chats have more than {max} messages and are too long to import',
+    tooBig: 'This file is too large to read (over 512 MB unzipped).',
+    sep: '; ',
     agentRow: 'Agent',
     agentNew: 'New agent "DeepSeek"',
     modelRow: 'Model to continue with',
@@ -171,8 +181,20 @@ async function readConversationsFromZip(buf) {
     if (typeof DecompressionStream !== 'function') throw new Error('zip-unsupported')
     var ds
     try { ds = new DecompressionStream('deflate-raw') } catch (e) { throw new Error('zip-unsupported') }
-    var stream = new Blob([data]).stream().pipeThrough(ds)
-    return await new Response(stream).text()
+    // 流式解压、按字节封顶:高压缩比的 zip 能把几十 KB 吹成几十 GB,整段 .text() 会撑爆渲染进程(Codex 11-16)
+    var reader = new Blob([data]).stream().pipeThrough(ds).getReader()
+    var td = new TextDecoder('utf-8')
+    var parts = []
+    var total = 0
+    for (;;) {
+      var step = await reader.read()
+      if (step.done) break
+      total += step.value.byteLength
+      if (total > MAX_JSON_BYTES) { try { await reader.cancel() } catch (e) { /* ignore */ } throw new Error('too-big') }
+      parts.push(td.decode(step.value, { stream: true }))
+    }
+    parts.push(td.decode())
+    return parts.join('')
   }
   return null
 }
@@ -279,6 +301,7 @@ function parseExport(text, opts) {
   if (!list) throw new Error('json')
   var out = []
   var skipped = 0
+  var tooLong = 0
   var seenIds = {}
   for (var i = 0; i < list.length; i++) {
     var c = list[i]
@@ -296,7 +319,7 @@ function parseExport(text, opts) {
       for (var k = 0; k < c.messages.length; k++) { var mm = messageOf(c.messages[k], opts); if (mm) messages.push(mm) }
     }
     if (!messages.length) { skipped++; continue }
-    if (messages.length > 5000) messages = messages.slice(messages.length - 5000)
+    if (messages.length > MAX_MESSAGES) { tooLong++; continue }
     seenIds[id] = 1
     var conv = { id: id, title: typeof c.title === 'string' && c.title.trim() ? c.title.trim().slice(0, 200) : t('untitled'), messages: messages }
     var created = okMs(toMs(c.inserted_at != null ? c.inserted_at : (c.create_time != null ? c.create_time : c.created_at)))
@@ -305,10 +328,11 @@ function parseExport(text, opts) {
     if (updated) conv.updatedAt = updated
     out.push(conv)
   }
-  return { conversations: out, skipped: skipped }
+  return { conversations: out, skipped: skipped, tooLong: tooLong }
 }
 
 async function parseFile(file, opts) {
+  if (file.size > MAX_JSON_BYTES) throw new Error('too-big')
   var buf = await file.arrayBuffer()
   var head = new Uint8Array(buf.slice(0, 4))
   var text
@@ -393,7 +417,7 @@ async function loadFile(f) {
   } catch (e) {
     var code = String((e && e.message) || e)
     state.phase = 'error'
-    state.error = code === 'zip-unsupported' ? t('zipUnsupported') : (code === 'json' || code === 'zip' || code === 'zip-method') ? t('notJson') : t('readFailed') + ':' + code
+    state.error = code === 'too-big' ? t('tooBig') : code === 'zip-unsupported' ? t('zipUnsupported') : (code === 'json' || code === 'zip' || code === 'zip-method') ? t('notJson') : t('readFailed') + ':' + code
   }
   redraw()
 }
@@ -475,7 +499,10 @@ function schema() {
       if (b && b > hi) hi = b
     })
     items.push({ id: 'file', type: 'button', title: t('fileRow'), desc: state.fileName, buttons: [{ label: t('repick'), onClick: pickFile, disabled: state.phase === 'importing' }] })
-    items.push({ id: 'count', type: 'value', title: t('conversations'), desc: p.skipped ? t('skipped', { n: p.skipped }) : undefined, value: String(p.conversations.length) })
+    var notes = []
+    if (p.skipped) notes.push(t('skipped', { n: p.skipped }))
+    if (p.tooLong) notes.push(t('tooLong', { n: p.tooLong, max: MAX_MESSAGES }))
+    items.push({ id: 'count', type: 'value', title: t('conversations'), desc: notes.length ? notes.join(t('sep')) : undefined, value: String(p.conversations.length) })
     items.push({ id: 'msgs', type: 'value', title: t('messages'), value: String(nMsg) })
     if (hi) items.push({ id: 'range', type: 'value', title: t('range'), value: fmtDate(lo === Infinity ? hi : lo) + ' – ' + fmtDate(hi) })
     if (state.phase === 'ready') {

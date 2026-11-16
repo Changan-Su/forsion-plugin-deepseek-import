@@ -12,7 +12,7 @@ import { deflateRawSync } from 'node:zlib'
 
 const src = readFileSync(new URL('./main.js', import.meta.url), 'utf8')
 
-function load(locale = 'zh', tangu) {
+function load(locale = 'zh', tangu, code = src) {
   let api = null
   const settingsViews = []
   const commands = []
@@ -29,7 +29,7 @@ function load(locale = 'zh', tangu) {
     tangu,
     __expose: (o) => { api = o },
   }
-  new Function('ctx', src)(ctx)
+  new Function('ctx', code)(ctx)
   return { api, ctx, settingsViews, commands, store }
 }
 
@@ -154,6 +154,18 @@ function fakeTangu(opts = {}) {
     },
     openSession: async (id) => { calls.opened = id },
   }
+}
+
+// ── 超长对话整段跳过并计数(不悄悄截掉),zip 解压按字节封顶 ──
+{
+  const { api } = load('zh')
+  const long = [{ id: 'long', title: 'long', messages: Array.from({ length: 20001 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: 'x' })) }, exportJson[3]]
+  const r = api.parseExport(JSON.stringify(long), { reasoning: true })
+  A.equal(r.tooLong, 1)
+  A.deepEqual(r.conversations.map((c) => c.id), ['conv-3'])
+  const small = load('zh', undefined, src.replace('512 * 1024 * 1024', '1024')).api
+  const bomb = zip([{ name: 'conversations.json', data: Buffer.alloc(200_000, 0x20) }])
+  await A.rejects(() => small.readConversationsFromZip(bomb), /too-big/)
 }
 
 // ── 设置页 + 导入流程 ──
