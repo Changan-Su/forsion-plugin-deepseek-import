@@ -1,0 +1,29 @@
+{
+  "id": "deepseek-import",
+  "name": "DeepSeek 记录导入",
+  "nameEn": "DeepSeek import",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "minAppVersion": "2.14.3",
+  "main": "main.js",
+  "capabilities": ["agentImport"],
+  "description": "把 DeepSeek 网页版导出的聊天记录变成 Forsion 里的一个 Agent:每段旧对话都是它名下的一个会话,点开就能接着聊,原来的标题、时间和深度思考内容都在。在 DeepSeek「设置 → 数据管理 → 导出所有历史对话」下载 zip,然后在本插件的设置页选它。文件只在本机读;导进来的会话只在这台设备上(桌面进本机,手机 / 网页进云端),同一段对话再导一次不会重复,也不会盖掉你接着聊过的内容。",
+  "descriptionEn": "Turn the chats you export from DeepSeek on the web into an agent in Forsion: each old chat becomes a session under it that you can open and continue, with its original title, dates and DeepThink reasoning. In DeepSeek, go to Settings → Data → Export all chats, download the zip, then pick it on this plugin's settings page. The file is read on your device only; imported sessions stay on this device (the desktop's local engine, or the cloud on phone and web). Importing the same chat again does not duplicate it or overwrite anything you added by continuing it.",
+  "onboarding": {
+    "intro": "DeepSeek 网页版现在会停用一段时间没动的长对话。导出记录后交给这个插件,旧对话在 Forsion 里接着聊。",
+    "steps": [
+      { "title": "在 DeepSeek 导出", "description": "DeepSeek 网页版 → 左下角头像 → 设置 → 数据管理 → 导出所有历史对话,下载 zip。" },
+      { "title": "在这里导入", "description": "打开本插件的设置页(或命令面板「DeepSeek 记录导入:打开」),选这个 zip,选好模型后点「导入」。" },
+      { "title": "接着聊", "description": "导入的对话在「DeepSeek」这个 Agent 名下,按原来的时间排着,点开就能接着聊。" }
+    ],
+    "en": {
+      "intro": "DeepSeek on the web now retires long chats that sat idle for a while. Export your history and hand it to this plugin to keep those chats going in Forsion.",
+      "steps": [
+        { "title": "Export from DeepSeek", "description": "DeepSeek on the web → your avatar at the bottom left → Settings → Data → Export all chats, and download the zip." },
+        { "title": "Import it here", "description": "Open this plugin's settings page (or \"DeepSeek import: Open\" in the command palette), pick the zip, choose a model and press Import." },
+        { "title": "Keep chatting", "description": "The imported chats sit under the \"DeepSeek\" agent, sorted by their original dates. Open one and carry on." }
+      ]
+    },
+    "settings": true
+  }
+}
