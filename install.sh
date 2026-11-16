@@ -2,8 +2,7 @@
 # 装/更新「DeepSeek 记录导入」插件到 Forsion 家目录。
 #   用法:sh install.sh [dev|prod]     缺省 dev(~/.forsion-dev);prod=~/.forsion
 # 本仓即插件本体:整目录拷到 <home>/plugins/deepseek-import/ 一处即完成——
-#   桌面识别 manifest.json(UI 插件 + .deck.md 文件类型);
-#   随包技能 skills/flashcard-format 由引擎启动时播种(已存在则保留原样)。
+#   桌面识别 manifest.json(纯界面插件,没有引擎半身)。
 set -euo pipefail
 MODE="${1:-dev}"
 case "$MODE" in
