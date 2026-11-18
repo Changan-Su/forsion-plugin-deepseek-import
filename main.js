@@ -11,6 +11,7 @@
  * 界面:插件详情页(ctx.registerSettingsView + ctx.ui.mountSettingsPage,宿主自己的设置部件,手机上自动换排),
  *   外加一条命令直达这一页。不建 Space、不写笔记库;装好是空的。
  * 数据:导出文件只在本机内存里解析,不上传别处;只往本端引擎写会话。ctx.saveData 只记「上次用的 Agent」。
+ *   存过却读不出来(宿主 2026-11-17 起 loadData reject,code = 'plugin-data-unreadable')时不写盘、提示一次,导入照常。
  * 解析器容错(DeepSeek 没有公开格式说明):mapping 树沿 current_node 往上走,没有就从根沿最后一个孩子往下走;
  *   片段 REQUEST → 用户、RESPONSE → 回答、THINK → 思考过程、FILE → 附件名,SEARCH / TOOL_* 只留一行说明;
  *   旧式 { role, content } 消息也认。时间:ISO 串或秒 / 毫秒数字都认。
@@ -74,6 +75,8 @@ var MSG = {
     fileNote: '[附件:{name}]',
     searchNote: '[这条回答用到了联网搜索,搜索结果没有导入]',
     agentCreateFailed: '建 Agent 失败:{error}',
+    dataUnreadable: '读不出已保存的插件设置,「记住上次用的 Agent」先停用,也不会保存改动,原来的设置没有动。这次请自己选放进哪个 Agent,导入照常能用。',
+    agentNotRemembered: '读不出上次用的 Agent,这次的选择不会记住。',
   },
   en: {
     cmdOpen: 'DeepSeek import: Open',
@@ -126,6 +129,8 @@ var MSG = {
     fileNote: '[Attachment: {name}]',
     searchNote: '[This reply used web search; the search results were not imported]',
     agentCreateFailed: 'Could not create the agent: {error}',
+    dataUnreadable: 'Your saved plugin settings could not be read. Remembering the last agent you used is paused and nothing will be saved, so the original settings are left as they were. Pick the agent yourself this time; importing still works.',
+    agentNotRemembered: 'Your last agent could not be read, so this choice will not be remembered.',
   },
 }
 
@@ -358,19 +363,40 @@ var state = {
   reasoning: true,
   progress: { done: 0, total: 0 },
   result: null,
+  savedUnreadable: false, // 上次读「上次用的 Agent」时存过却读不出来
 }
 var listeners = []
 function redraw() { listeners.forEach(function (f) { try { f() } catch (e) { console.warn('[deepseek-import] redraw', e) } }) }
 
-async function saved() { try { var v = ctx.loadData ? await ctx.loadData() : null; return v && typeof v === 'object' ? v : {} } catch (e) { return {} } }
+// 存过却读不出来(读错误 / 零字节 / 写到一半 / 被手改坏):宿主 2026-11-17 起 reject 这个 code。
+// 这时按 {} 接着存,会把原来那份整个盖掉;所以只读不写、提示一次(每个插件实例一次),等下次再读。
+// 没存过(null,旧宿主读不出来也是 null)和别的错照旧当空。
+function isDataUnreadable(e) { return !!e && typeof e === 'object' && e.code === 'plugin-data-unreadable' }
+var unreadableNoticed = false
+function noticeUnreadable(e) {
+  state.savedUnreadable = true
+  if (unreadableNoticed) return
+  unreadableNoticed = true
+  console.warn('[deepseek-import] saved plugin data could not be read (' + (e && e.reason) + '); nothing will be saved')
+  if (typeof ctx.notify === 'function') ctx.notify(t('dataUnreadable'), { level: 'warning' })
+}
+/** 存着的数据;存过却读不出来时抛 code = plugin-data-unreadable 的错(调用方别拿它当空再存) */
+async function saved() {
+  try { var v = ctx.loadData ? await ctx.loadData() : null; state.savedUnreadable = false; return v && typeof v === 'object' ? v : {} } catch (e) {
+    if (isDataUnreadable(e)) { noticeUnreadable(e); throw e }
+    return {}
+  }
+}
 async function persist(patch) {
   try {
     var cur = await saved()
+    // 读不出来之后、还没有哪次读成功过:这次就算是别的错(当空)也不写,免得盖掉那份读不出来的
+    if (state.savedUnreadable) return
     var next = {}
     Object.keys(cur).forEach(function (k) { next[k] = cur[k] })
     Object.keys(patch).forEach(function (k) { next[k] = patch[k] })
     if (ctx.saveData) await ctx.saveData(next)
-  } catch (e) { /* 只是记住上次的选择 */ }
+  } catch (e) { /* 只是记住上次的选择;读不出来时上面已经提示过,这里不写盘 */ }
 }
 
 function models() { try { return (ctx.tangu && ctx.tangu.models && ctx.tangu.models()) || [] } catch (e) { return [] } }
@@ -410,7 +436,9 @@ async function loadFile(f) {
     else {
       state.parsed = parsed
       state.phase = 'ready'
-      var last = (await saved()).agent
+      // 读不出上次用的 Agent:不预选、提示一次,导入照常(不算这个导出文件读不了)
+      var last = ''
+      try { last = (await saved()).agent } catch (e) { if (!isDataUnreadable(e)) throw e }
       state.agent = last && agents().some(function (a) { return a.slug === last }) ? last : ''
       if (!state.model) state.model = defaultModel()
     }
@@ -507,7 +535,7 @@ function schema() {
     if (hi) items.push({ id: 'range', type: 'value', title: t('range'), value: fmtDate(lo === Infinity ? hi : lo) + ' – ' + fmtDate(hi) })
     if (state.phase === 'ready') {
       var agentOpts = [{ value: '', label: t('agentNew') }].concat(agents().map(function (a) { return { value: a.slug, label: a.name || a.slug } }))
-      items.push({ id: 'agent', type: 'select', title: t('agentRow'), value: state.agent, options: agentOpts, onChange: function (v) { state.agent = v; redraw() } })
+      items.push({ id: 'agent', type: 'select', title: t('agentRow'), desc: state.savedUnreadable ? t('agentNotRemembered') : undefined, value: state.agent, options: agentOpts, onChange: function (v) { state.agent = v; redraw() } })
       var modelOpts = [{ value: '', label: t('modelCurrent') }].concat(models().map(function (m) { return { value: m.id, label: m.name || m.id } }))
       items.push({ id: 'model', type: 'select', title: t('modelRow'), desc: t('modelDesc'), value: state.model, options: modelOpts, onChange: function (v) { state.model = v; redraw() } })
       items.push({ id: 'think', type: 'switch', title: t('thinkRow'), desc: t('thinkDesc'), value: state.reasoning, onChange: function (v) { state.reasoning = v; return reparseForReasoning() } })
@@ -522,6 +550,7 @@ function schema() {
       items.push({ id: 'created', type: 'value', title: t('created'), value: String(r.created) })
       if (r.existed) items.push({ id: 'existed', type: 'value', title: t('existed'), value: String(r.existed) })
       if (r.failed) items.push({ id: 'failed', type: 'value', title: t('failed'), desc: r.firstError ? t('failedDesc', { error: r.firstError }) : undefined, value: String(r.failed) })
+      if (state.savedUnreadable) items.push({ id: 'agentUnsaved', type: 'value', title: t('agentRow'), desc: t('agentNotRemembered'), value: '' })
       if (r.latest && tg.openSession) items.push({ id: 'open', type: 'button', title: t('openTitle'), buttons: [{ label: t('openLatest'), kind: 'primary', onClick: function () { return tg.openSession(r.latest) } }] })
     }
   }

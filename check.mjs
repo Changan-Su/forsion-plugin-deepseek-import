@@ -221,6 +221,115 @@ function fakeTangu(opts = {}) {
   A.equal(api.schema().state.title, '这个版本的 Forsion 还不支持导入')
 }
 
+// ── 存过却读不出来(宿主 2026-11-17 起 loadData reject,code = plugin-data-unreadable)──
+// 「上次用的 Agent」不预选、不写盘、提示一次,导入照常;没存过(null)照旧存;别的错照旧。
+// 断言先收齐再统一报(负对照时能数出红几条、绿几条)。
+{
+  const results = []
+  const ok = (name, cond, detail) => { results.push({ name, pass: !!cond, detail }) }
+  const unreadable = () => Object.assign(new Error('plugin-data-unreadable'), { code: 'plugin-data-unreadable', reason: 'invalid-json' })
+  const settle = async () => { for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0)) }
+  const MSGS = new Function(`return ${src.match(/var MSG = (\{[\s\S]*?\n\})\n/)[1]}`)()
+  function boot(loadData, locale = 'zh') {
+    let api = null
+    const saves = [], notes = []
+    const tangu = fakeTangu()
+    const ctx = {
+      getLocale: () => locale,
+      subscribeLocale: () => () => {},
+      loadData,
+      saveData: async (v) => { saves.push(JSON.parse(JSON.stringify(v))) },
+      notify: (m, o) => { notes.push({ m: String(m), level: o && o.level }) },
+      registerSettingsView: () => {},
+      registerCommand: () => {},
+      ui: { mountSettingsPage: (_el, schema) => ({ update: () => {}, dispose: () => {} }) },
+      app: {},
+      tangu,
+      __expose: (o) => { api = o },
+    }
+    new Function('ctx', src)(ctx)
+    const agentRow = () => api?.schema?.()?.groups?.[0]?.items?.find((i) => i.id === 'agent')
+    return { api, tangu, saves, notes, agentRow }
+  }
+  const file = () => new File([exportText], 'conversations.json')
+
+  {
+    // 读不出来:文件照常读、不预选 Agent、不当成「文件读不了」;导入照常,但不写盘
+    const b = boot(async () => { throw unreadable() })
+    await b.api?.loadFile?.(file())
+    ok('U1 读不出来:导出文件照常进 ready,不报文件读不了', b.api?.state?.phase === 'ready', b.api?.state?.error)
+    ok('U1 读不出来:不预选 Agent', b.api?.state?.agent === '')
+    ok('U1 读不出来:提示一次', b.notes.length === 1 && b.notes[0].m === MSGS.zh.dataUnreadable && b.notes[0].level === 'warning', JSON.stringify(b.notes))
+    ok('U1 读不出来:Agent 那一行写明这次不记', typeof MSGS.zh.agentNotRemembered === 'string' && b.agentRow()?.desc === MSGS.zh.agentNotRemembered, b.agentRow()?.desc)
+    await b.api?.runImport?.()
+    await settle()
+    ok('U1 读不出来:导入照常', b.tangu.calls.imports.length === 1 && b.api?.state?.result?.ok === true)
+    ok('U1 读不出来:导入后不写盘', b.saves.length === 0, JSON.stringify(b.saves))
+    ok('U1 读不出来:导入结果页也写明这次不记(「再试一次」也不会存)', typeof MSGS.zh.agentNotRemembered === 'string' && b.api?.schema?.()?.groups?.[0]?.items?.some((i) => i.id === 'agentUnsaved' && i.desc === MSGS.zh.agentNotRemembered))
+    await b.api?.loadFile?.(file())
+    await b.api?.runImport?.()
+    await settle()
+    ok('U1 再选一次文件、再导一次:仍不写盘', b.saves.length === 0, JSON.stringify(b.saves))
+    ok('U1 同一个插件实例只提示一次', b.notes.length === 1, JSON.stringify(b.notes))
+  }
+  {
+    // 选文件时读得出、导入时才读不出:照样不写盘,提示
+    let n = 0
+    const b = boot(async () => { if (n++ === 0) return { agent: 'muse', keep: 1 }; throw unreadable() })
+    await b.api?.loadFile?.(file())
+    ok('U2 读得出时照常预选上次的 Agent', b.api?.state?.agent === 'muse')
+    ok('U2 读得出时不提示', b.notes.length === 0, JSON.stringify(b.notes))
+    await b.api?.runImport?.()
+    await settle()
+    ok('U2 导入时读不出来:不写盘', b.saves.length === 0, JSON.stringify(b.saves))
+    ok('U2 导入时读不出来:提示一次', b.notes.length === 1 && b.notes[0].m === MSGS.zh.dataUnreadable, JSON.stringify(b.notes))
+  }
+  {
+    // 选文件时读不出来、导入时又碰上别的错:仍不写(读成功之前一直不写)
+    let n = 0
+    const b = boot(async () => { if (n++ === 0) throw unreadable(); throw new Error('EIO') })
+    await b.api?.loadFile?.(file())
+    await b.api?.runImport?.()
+    await settle()
+    ok('U7 读不出来之后再碰上别的读错误:仍不写盘', b.saves.length === 0, JSON.stringify(b.saves))
+  }
+  {
+    const b = boot(async () => { throw unreadable() }, 'en')
+    await b.api?.loadFile?.(file())
+    ok('U3 英文界面提示是英文、没有汉字、没有路径', b.notes.length === 1 && b.notes[0].m === MSGS.en.dataUnreadable && !/[一-鿿]/.test(b.notes[0].m) && !/[/\\]|\.json/.test(MSGS.en.dataUnreadable + MSGS.zh.dataUnreadable), JSON.stringify(b.notes))
+  }
+  {
+    // 没存过(旧宿主读不出来也是 null):照常记住、不提示
+    const b = boot(async () => null)
+    await b.api?.loadFile?.(file())
+    await b.api?.runImport?.()
+    await settle()
+    ok('U4 没存过:照常记住这次用的 Agent', b.saves.length === 1 && b.saves[0].agent === 'deepseek', JSON.stringify(b.saves))
+    ok('U4 没存过:不提示、Agent 行没有附注', b.notes.length === 0 && b.agentRow()?.desc === undefined, JSON.stringify(b.notes))
+  }
+  {
+    // 读得出:合并保存,别的键留着
+    const b = boot(async () => ({ agent: 'muse', other: 'x' }))
+    await b.api?.loadFile?.(file())
+    b.api.state.agent = ''
+    await b.api?.runImport?.()
+    await settle()
+    ok('U5 读得出:合并保存、别的键不丢', b.saves.length === 1 && b.saves[0].agent === 'deepseek' && b.saves[0].other === 'x', JSON.stringify(b.saves))
+  }
+  {
+    // 别的错照旧(当空、照存、不提示)
+    const b = boot(async () => { throw new Error('EIO') })
+    await b.api?.loadFile?.(file())
+    await b.api?.runImport?.()
+    await settle()
+    ok('U6 别的读错误照旧:不提示、照常记住', b.notes.length === 0 && b.saves.length === 1 && b.api?.state?.phase === 'done', JSON.stringify({ notes: b.notes, saves: b.saves }))
+  }
+  const failed = results.filter((r) => !r.pass)
+  for (const r of results) console.log(`${r.pass ? '✓' : '✗'} ${r.name}${r.pass || r.detail === undefined ? '' : ' — ' + r.detail}`)
+  console.log(`data-unreadable: ${results.length - failed.length} passed, ${failed.length} failed`)
+  if (failed.length) throw new Error(`data-unreadable: ${failed.length} failed`)
+}
+
 // ── 双语 ──
 {
   const m = src.match(/var MSG = (\{[\s\S]*?\n\})\n/)
