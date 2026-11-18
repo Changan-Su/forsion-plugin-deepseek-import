@@ -230,7 +230,7 @@ function fakeTangu(opts = {}) {
   const unreadable = () => Object.assign(new Error('plugin-data-unreadable'), { code: 'plugin-data-unreadable', reason: 'invalid-json' })
   const settle = async () => { for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0)) }
   const MSGS = new Function(`return ${src.match(/var MSG = (\{[\s\S]*?\n\})\n/)[1]}`)()
-  function boot(loadData, locale = 'zh') {
+  function boot(loadData, locale = 'zh', notify = null) {
     let api = null
     const saves = [], notes = []
     const tangu = fakeTangu()
@@ -239,7 +239,7 @@ function fakeTangu(opts = {}) {
       subscribeLocale: () => () => {},
       loadData,
       saveData: async (v) => { saves.push(JSON.parse(JSON.stringify(v))) },
-      notify: (m, o) => { notes.push({ m: String(m), level: o && o.level }) },
+      notify: notify || ((m, o) => { notes.push({ m: String(m), level: o && o.level }) }),
       registerSettingsView: () => {},
       registerCommand: () => {},
       ui: { mountSettingsPage: (_el, schema) => ({ update: () => {}, dispose: () => {} }) },
@@ -292,6 +292,15 @@ function fakeTangu(opts = {}) {
     await b.api?.runImport?.()
     await settle()
     ok('U7 读不出来之后再碰上别的读错误:仍不写盘', b.saves.length === 0, JSON.stringify(b.saves))
+  }
+  {
+    // 提示本身抛错:仍不写盘,文件照常能导
+    const b = boot(async () => { throw unreadable() }, 'zh', () => { throw new Error('notify broke') })
+    await b.api?.loadFile?.(file())
+    ok('U8 提示抛错时:文件照常进 ready,不报文件读不了', b.api?.state?.phase === 'ready', b.api?.state?.error)
+    await b.api?.runImport?.()
+    await settle()
+    ok('U8 提示抛错时:导入照常、仍不写盘', b.saves.length === 0 && b.tangu.calls.imports.length === 1, JSON.stringify({ saves: b.saves, phase: b.api?.state?.phase }))
   }
   {
     const b = boot(async () => { throw unreadable() }, 'en')
