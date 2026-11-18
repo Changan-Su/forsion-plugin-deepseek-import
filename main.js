@@ -378,7 +378,8 @@ function noticeUnreadable(e) {
   if (unreadableNoticed) return
   unreadableNoticed = true
   console.warn('[deepseek-import] saved plugin data could not be read (' + (e && e.reason) + '); nothing will be saved')
-  if (typeof ctx.notify === 'function') ctx.notify(t('dataUnreadable'), { level: 'warning' })
+  // 提示失败不能把「读不出来、不写」变成别的错
+  try { if (typeof ctx.notify === 'function') ctx.notify(t('dataUnreadable'), { level: 'warning' }) } catch (err) { console.warn('[deepseek-import] notify', err) }
 }
 /** 存着的数据;存过却读不出来时抛 code = plugin-data-unreadable 的错(调用方别拿它当空再存) */
 async function saved() {
